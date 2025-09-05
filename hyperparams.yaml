@@ -1,0 +1,42 @@
+{
+  "informer": {
+    "d_model": [16, 32, 64, 128, 256, 512],
+    "e_layers": [1, 2, 3],
+    "d_layers": [1, 2, 3],
+    "d_ff": [4, 16, 64, 128, 256],
+    "dropout": [0.0, 0.05, 0.1, 0.2],
+    "factor": [1, 2, 3],
+    "n_heads": [3, 4, 5],
+    "activation": ["gelu"]
+  },
+  "autoformer": {
+    "d_model": [16, 32, 64, 128, 256, 512],
+    "e_layers": [1, 2, 3],
+    "d_layers": [1, 2, 3],
+    "d_ff": [4, 16, 64, 128, 256],
+    "dropout": [0.0, 0.05, 0.1, 0.2],
+    "factor": [1, 2, 3],
+    "n_heads": [3, 4, 5],
+    "activation": ["gelu"]
+  },
+  "fedformer": {
+    "d_model": [16, 32, 64, 128, 256, 512],
+    "e_layers": [1, 2, 3],
+    "d_layers": [1, 2, 3],
+    "d_ff": [4, 16, 64, 128, 256],
+    "dropout": [0.0, 0.05, 0.1, 0.2],
+    "factor": [1, 2, 3],
+    "n_heads": [3, 4, 5],
+    "activation": ["gelu"]
+  },
+  "pyraformer": {
+    "d_model": [16, 32, 64, 128, 256, 512],
+    "e_layers": [1, 2, 3],
+    "d_layers": [1, 2, 3],
+    "d_ff": [4, 16, 64, 128, 256],
+    "dropout": [0.0, 0.05, 0.1, 0.2],
+    "factor": [1, 2, 3],
+    "n_heads": [3, 4, 5],
+    "activation": ["gelu"]
+  }
+}
