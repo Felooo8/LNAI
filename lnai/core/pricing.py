@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from math import erf, exp, log, sqrt
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -21,6 +21,23 @@ __all__ = [
     "binomial_price",
     "mc_price",
 ]
+
+
+def _ensure_quote_date(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with a normalized ``QUOTE_DATE`` column when present."""
+    if "QUOTE_DATE" not in df.columns:
+        return df
+    normalized = df.copy()
+    normalized["QUOTE_DATE"] = pd.to_datetime(normalized["QUOTE_DATE"])
+    return normalized
+
+
+def _resolve_asset_column(df: pd.DataFrame) -> Optional[str]:
+    """Return the first supported underlying-asset column, if any."""
+    for col in ("underlying", "underlying_symbol", "root"):
+        if col in df.columns:
+            return col
+    return None
 
 # ---------------------------------------------------------------------------
 # Data utilities
@@ -37,10 +54,7 @@ def load_parquet(path: str | Path, **kwargs) -> pd.DataFrame:
         Additional keyword arguments passed to :func:`pandas.read_parquet`.
     """
     df = pd.read_parquet(path, **kwargs)
-    # ensure the date column is a ``datetime64`` type for later filtering
-    if "QUOTE_DATE" in df.columns:
-        df["QUOTE_DATE"] = pd.to_datetime(df["QUOTE_DATE"])
-    return df
+    return _ensure_quote_date(df)
 
 
 def filter_options(
@@ -57,14 +71,12 @@ def filter_options(
     optionally, restricts the underlying asset and minimum time to
     maturity.
     """
-    df = df.copy()
+    df = _ensure_quote_date(df.copy())
 
     if asset is not None:
-        # Different datasets use different column names for the underlying
-        for col in ("underlying", "underlying_symbol", "root"):
-            if col in df.columns:
-                df = df[df[col].str.lower() == asset.lower()]
-                break
+        asset_col = _resolve_asset_column(df)
+        if asset_col is not None:
+            df = df[df[asset_col].astype(str).str.lower() == asset.lower()]
 
     if "ttm" in df.columns:
         df = df[df["ttm"] >= min_ttm_days]
@@ -102,13 +114,17 @@ def make_time_splits(
     if "QUOTE_DATE" not in df.columns:
         raise KeyError("DataFrame must contain a 'QUOTE_DATE' column")
 
-    df = df.sort_values("QUOTE_DATE").reset_index(drop=True)
+    df = _ensure_quote_date(df).sort_values("QUOTE_DATE").reset_index(drop=True)
+    if df.empty:
+        return []
     start_date = df["QUOTE_DATE"].min()
     end_date = df["QUOTE_DATE"].max()
 
     total_months = train_years * 12 + val_months + test_years * 12
     if step_months is None:
         step_months = total_months
+    if step_months <= 0:
+        raise ValueError("step_months must be a positive integer")
 
     splits = []
     cur_start = start_date

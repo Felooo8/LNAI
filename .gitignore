@@ -12,7 +12,11 @@ __pycache__
 *.pkl
 *.parquet
 data/*
-tests/*
 .DS_Store
 .Rhistory
 *.docx
+# Local environments
+.venv/
+.env
+.pytest_cache/
+.ruff_cache/

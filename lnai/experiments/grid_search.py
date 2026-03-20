@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import itertools
 import json
-from dataclasses import dataclass, asdict, fields
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Optional, Tuple
+
+from lnai.config import DEFAULT_HYPERPARAM_PATH
 
 try:  # Optional dependency
     import yaml  # type: ignore
@@ -32,7 +34,7 @@ class TransformerConfig:
 CONFIG_FIELDS = {f.name for f in fields(TransformerConfig)}
 
 
-def load_param_grid(model: str, path: Path = Path("hyperparams.yaml")) -> Dict[str, Iterable]:
+def load_param_grid(model: str, path: Path = DEFAULT_HYPERPARAM_PATH) -> Dict[str, Iterable]:
     """Load hyper-parameter ranges for ``model`` from ``path``.
 
     The configuration file is expected to be YAML but falls back to JSON if the
@@ -71,10 +73,10 @@ def informer_trainer(asset: str, horizon: int, cfg: TransformerConfig) -> float:
     Returns
     -------
     float
-        Validation loss returned by :func:`informer_runner.train`.
+        Validation loss returned by :func:`lnai.experiments.informer_forecasting.train`.
     """
 
-    from informer_runner import train as informer_train
+    from lnai.experiments.informer_forecasting import train as informer_train
 
     params = {
         "data_path": f"data/cleaned/{asset}-options.parquet",
@@ -99,6 +101,7 @@ def autoformer_trainer(asset: str, horizon: int, cfg: TransformerConfig) -> floa
     """Train Autoformer with ``cfg`` and return a validation metric."""
 
     import argparse
+
     from Autoformer.run import run as autoformer_run
 
     args = argparse.Namespace(
@@ -132,6 +135,7 @@ def fedformer_trainer(asset: str, horizon: int, cfg: TransformerConfig) -> float
     """Train FEDformer with ``cfg`` and return a validation metric."""
 
     import argparse
+
     from FEDformer.run import run as fedformer_run
 
     args = argparse.Namespace(
@@ -165,6 +169,7 @@ def pyraformer_trainer(asset: str, horizon: int, cfg: TransformerConfig) -> floa
     """Train Pyraformer with ``cfg`` and return a validation metric."""
 
     import argparse
+
     from Pyraformer.run import run as pyraformer_run
 
     args = argparse.Namespace(
@@ -230,7 +235,7 @@ def grid_search(
 
     keys = sorted(param_grid)
     for values in itertools.product(*[param_grid[k] for k in keys]):
-        cfg = TransformerConfig(**dict(zip(keys, values)))
+        cfg = TransformerConfig(**dict(zip(keys, values, strict=True)))
         cache_file = cache_dir / f"{cfg}.json"
         if cache_file.exists():
             metric = json.loads(cache_file.read_text())["metric"]
