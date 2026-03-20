@@ -11,7 +11,7 @@ Run Autoformer and Informer on the default dataset and save metrics:
 
 .. code-block:: bash
 
-    python train_all_models.py --models informer autoformer --output results.json
+    python -m lnai.experiments.train_all_models --models informer autoformer --output results.json
 
 Use ``--dry-run`` to see which commands would execute without running the
 training loops.
@@ -24,6 +24,8 @@ import csv
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from lnai.config import DEFAULT_CACHE_ROOT, DEFAULT_DATA_PATH
 
 
 def train_and_eval(model_name: str, cfg: Dict[str, Any]) -> Dict[str, float]:
@@ -44,12 +46,12 @@ def train_and_eval(model_name: str, cfg: Dict[str, Any]) -> Dict[str, float]:
     if task == "valuate" or cfg.get("horizon", 0) == 0:
         if name != "informer":
             raise ValueError("Valuation task currently supports only the Informer model")
-        from transformer_valuate import train as valuate_train
+        from lnai.experiments.informer_valuation import train as valuate_train
 
         return valuate_train(cfg)
 
     if name == "informer":
-        from informer_runner import train as informer_train
+        from lnai.experiments.informer_forecasting import train as informer_train
 
         return informer_train(cfg)
 
@@ -146,7 +148,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--data-path",
-        default="data/cleaned/aapl-options.parquet",
+        default=str(DEFAULT_DATA_PATH),
         help="Dataset path used by Informer baseline",
     )
     parser.add_argument(
@@ -162,7 +164,7 @@ def main() -> None:
     parser.add_argument("--data-id", type=int, default=22, help="Dataset cache identifier")
     parser.add_argument(
         "--cache-root",
-        default="cache_inf_forecast",
+        default=str(DEFAULT_CACHE_ROOT),
         help="Directory for Informer caches",
     )
     parser.add_argument(

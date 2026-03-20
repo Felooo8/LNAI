@@ -11,18 +11,19 @@ aggregation utilities in this repository.
 from __future__ import annotations
 
 import argparse
+import random
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
+import tensorflow as tf
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from tensorflow.keras import callbacks, layers, models
-import random
-import tensorflow as tf
 
-from features import get_feature_list
-from preprocessing import scale_splits
+from lnai.config import DEFAULT_DATA_PATH
+from lnai.data.features import get_feature_list
+from lnai.data.preprocessing import scale_splits
 
 TARGET = "price"
 SEQ_LEN = 30
@@ -170,7 +171,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--data-path",
-        default="data/cleaned/aapl-options.parquet",
+        default=str(DEFAULT_DATA_PATH),
         help="Path to cleaned option dataset",
     )
     p.add_argument(

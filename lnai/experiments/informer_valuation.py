@@ -1,30 +1,29 @@
-import pickle
-from pathlib import Path
-import random
 import argparse
+import pickle
+import random
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-from Informer2020.models.model import Informer
-import matplotlib.pyplot as plt
-from features import get_feature_list
-from preprocessing import scale_splits
+from torch.utils.data import DataLoader, Dataset
 
-from pricing_pipeline import load_parquet, filter_options, make_time_splits
+from Informer2020.models.model import Informer
+from lnai.config import DEFAULT_DATA_PATH
+from lnai.core.pricing import filter_options, load_parquet
+from lnai.data.features import get_feature_list
+from lnai.data.preprocessing import scale_splits
 
 TARGET = 'price'
-SEQ_LEN = 30            # look-back window
+SEQ_LEN = 30
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-SEEDS = [0, 1, 2, 3, 4]
+SEEDS = [0, 1, 2]
 
 
 def make_parser() -> argparse.ArgumentParser:
-    """Return an argument parser pre-configured for training."""
-
-    p = argparse.ArgumentParser(description="Train the Informer baseline")
-    p.add_argument("--horizon", type=int, default=30, help="Forecast horizon")
+    """Return an argument parser pre-configured for valuation training."""
+    p = argparse.ArgumentParser(description="Train transformer for option valuation")
     p.add_argument("--batch-size", type=int, default=64, help="Batch size")
     p.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
     p.add_argument("--lr", type=float, default=0.05, help="Learning rate")
@@ -32,12 +31,12 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--data-id", type=int, default=22, help="Dataset cache identifier")
     p.add_argument(
         "--data-path",
-        default="data/cleaned/aapl-options.parquet",
+        default=str(DEFAULT_DATA_PATH),
         help="Path to input dataset",
     )
     p.add_argument(
         "--cache-root",
-        default="cache_inf_forecast",
+        default="cache_inf_valuate",
         help="Directory for cached datasets and models",
     )
     return p
@@ -49,42 +48,13 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
 
 
-
 # ------------  DATA & SPLITS  -------------------------------
-def prepare_splits(path: str, horizon: int):
-    """Return train/val/test splits for a given horizon."""
-
-    min_ttm_days = horizon + 30
+def prepare_splits_simple(path: str, asset: str = 'aapl'):
+    """Simpler deterministic time windows used by valuation script."""
     df = filter_options(
-        load_parquet(path), min_data_points=61, min_ttm_days=min_ttm_days
+        load_parquet(path), min_data_points=61, asset=asset, min_ttm_days=30
     )
-    df = df.sort_values("QUOTE_DATE").reset_index(drop=True)
-
-    # 2) tile into back-to-back 1y / 3mo / 1y blocks
-    splits = make_time_splits(df,
-                              train_years=1,
-                              val_months=3,
-                              test_years=1,
-                              step_months=1)
-
-    # 3) concat each block type
-    train_df = pd.concat([t for t,_,_,_ in splits]).reset_index(drop=True)
-    val_df   = pd.concat([v for _,v,_,_ in splits]).reset_index(drop=True)
-    test_df  = pd.concat([te for _,_,te,_ in splits]).reset_index(drop=True)
-
-    return train_df, val_df, test_df, splits
-
-# ------------  DATA & SPLITS  -------------------------------
-def prepare_splits_simple(path: str, horizon: int, asset: str = 'aapl'):
-    """Simpler deterministic time windows used by trading script."""
-
-    min_ttm_days = horizon + 30
-    df = filter_options(
-        load_parquet(path), min_data_points=61, asset=asset, min_ttm_days=min_ttm_days
-    )
-    # 2) ensure datetime
     df['QUOTE_DATE'] = pd.to_datetime(df['QUOTE_DATE'])
-    # 3) slice by explicit windows
     if asset == 'btc':
         train = df[df.QUOTE_DATE.between('2021-06-01','2023-01-31')].copy()
         val   = df[df.QUOTE_DATE.between('2023-02-01','2023-07-31')].copy()
@@ -97,66 +67,41 @@ def prepare_splits_simple(path: str, horizon: int, asset: str = 'aapl'):
 
 
 # ------------------------- DATASET -------------------------------
-class InformerForecastDS(Dataset):
-    def __init__(self, df: pd.DataFrame, pred_len: int, label_len: int, features):
-        self.pred_len = pred_len
+class InformerValuationDS(Dataset):
+    def __init__(self, df: pd.DataFrame, label_len: int, features):
         self.label_len = label_len
-        self.dates = []  # new list to store date origins
+        self.dates = []
 
-        feats = features  # e.g. ['is_call', 'moneyness', ...]
+        feats = features
         enc_list, dec_list, y_list = [], [], []
 
         for _, g in df.groupby('option_id', sort=False):
-            if len(g) < SEQ_LEN + pred_len:
+            if len(g) < SEQ_LEN:
                 continue
-            X = g[feats].values                    # shape [T, n_feats]
-            Y = g[TARGET].values                  # shape [T]
-
-            # indices for deterministic features known at prediction time
-            call_idx = feats.index('is_call') if 'is_call' in feats else None
-            ttm_idx  = feats.index('ttm') if 'ttm' in feats else None
-
-            # rolling windows -------------------------------------------------
-            max_i = len(g) - pred_len
-            for end in range(SEQ_LEN, max_i):
-                forecast_origin = g.iloc[end - 1]["QUOTE_DATE"]
-                self.dates.append(forecast_origin)
-                start   = end - SEQ_LEN
-                enc_x   = X[start:end]            # [seq_len, n_feats]
-
+            X = g[feats].values
+            Y = g[TARGET].values
+            for end in range(SEQ_LEN, len(g) + 1):
+                self.dates.append(g.iloc[end - 1]["QUOTE_DATE"])
+                start = end - SEQ_LEN
+                enc_x = X[start:end]
                 label_slice = X[end - self.label_len:end]
-
-                # build future decoder features using only deterministic info
-                future = np.zeros((pred_len, len(feats)))
-                if call_idx is not None:
-                    future[:, call_idx] = X[end - 1, call_idx]
-                if ttm_idx is not None:
-                    current_ttm = g.iloc[end - 1]["ttm"]
-                    future[:, ttm_idx] = np.maximum(
-                        current_ttm - np.arange(1, pred_len + 1), 0
-                    )
-
+                future = label_slice[-1:]
                 dec_x = np.vstack([label_slice, future])
-
-                target = Y[end:end + pred_len]    # [pred_len]
-
+                target = Y[end - 1:end]
                 enc_list.append(enc_x)
                 dec_list.append(dec_x)
                 y_list.append(target)
 
-        # stack once – much faster --------------------------------------------
         self.enc_x = torch.tensor(np.stack(enc_list), dtype=torch.float32)
         self.dec_x = torch.tensor(np.stack(dec_list), dtype=torch.float32)
-        self.y     = torch.tensor(np.stack(y_list),  dtype=torch.float32)
+        self.y = torch.tensor(np.stack(y_list), dtype=torch.float32)
         self.dates = np.array(self.dates)
 
     def __len__(self):
         return len(self.y)
 
     def __getitem__(self, i):
-        # return only the tensors we’ll actually use
         return self.enc_x[i], self.dec_x[i], self.y[i]
-
 
 
 # ------------------------ MODEL ----------------------------------
@@ -172,11 +117,7 @@ def build_model(
     d_ff: int = 8,
     dropout: float = 0.06,
 ):
-    """Instantiate an Informer model with configurable hyperparameters.
-
-    Parameters mirror the paper's notation and can now be tuned from
-    external utilities (e.g. grid search).
-    """
+    """Instantiate an Informer model with configurable hyperparameters."""
     return Informer(
         enc_in=n_feats,
         dec_in=n_feats,
@@ -203,7 +144,6 @@ def build_model(
 
 
 # ----------------------- TRAIN / EVAL ----------------------------
-
 def run_epoch(model, loader, criterion, opt=None):
     is_train = opt is not None
     model.train() if is_train else model.eval()
@@ -211,9 +151,9 @@ def run_epoch(model, loader, criterion, opt=None):
 
     for idx, (enc_x, dec_x, y) in enumerate(loader):
         enc_x, dec_x = enc_x.to(DEVICE), dec_x.to(DEVICE)
-        y = y.to(DEVICE).unsqueeze(-1)            # [B, pred_len, 1]
+        y = y.to(DEVICE).unsqueeze(-1)
 
-        out  = model(enc_x, dec_x)                # Informer call
+        out = model(enc_x, dec_x)
         loss = criterion(out, y)
 
         if is_train:
@@ -226,25 +166,24 @@ def run_epoch(model, loader, criterion, opt=None):
 
     return float(np.mean(losses))
 
+
 # ------------  MAIN  ----------------------------------------
 def train(cfg=None):
-    """Train the Informer model and return aggregate test metrics."""
-
+    """Train the valuation model and return aggregate test metrics."""
     cfg = cfg or {}
-    horizon = cfg.get("horizon", 30)
     batch = cfg.get("batch", cfg.get("batch_size", 64))
     epochs = cfg.get("epochs", 10)
     lr = cfg.get("lr", 0.05)
     run_id = cfg.get("run_id", 44)
     data_id = cfg.get("data_id", 22)
     data_path = cfg.get("data_path", "data/cleaned/aapl-options.parquet")
-    cache_root = Path(cfg.get("cache_root", "cache_inf_forecast"))
+    cache_root = Path(cfg.get("cache_root", "cache_inf_valuate"))
     seeds = cfg.get("seeds", SEEDS)
 
-    label_len = 4 if horizon == 7 else 15
-    features = get_feature_list(forecasting=horizon > 0)
+    label_len = 15
+    features = get_feature_list(forecasting=False)
 
-    train_df, val_df, test_df, _ = prepare_splits_simple(data_path, horizon)
+    train_df, val_df, test_df, _ = prepare_splits_simple(data_path)
     print(
         f"Rows » train={len(train_df):,}  val={len(val_df):,}  test={len(test_df):,}"
     )
@@ -252,8 +191,8 @@ def train(cfg=None):
     feats = [f for f in features if f != TARGET]
     scaler_X, scaler_y = scale_splits(train_df, val_df, test_df, feats, TARGET)
 
-    pred_len = horizon
-    cache_dir = cache_root / f"h{pred_len}"
+    pred_len = 1
+    cache_dir = cache_root / "h0"
     cache_root.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file = cache_dir / f"ds_s_{data_id}.pkl"
@@ -263,9 +202,9 @@ def train(cfg=None):
             train_ds, val_ds, test_ds = pickle.load(f)
         print("🔄 Loaded cached datasets")
     else:
-        train_ds = InformerForecastDS(train_df, pred_len, label_len, features)
-        val_ds = InformerForecastDS(val_df, pred_len, label_len, features)
-        test_ds = InformerForecastDS(test_df, pred_len, label_len, features)
+        train_ds = InformerValuationDS(train_df, label_len, features)
+        val_ds = InformerValuationDS(val_df, label_len, features)
+        test_ds = InformerValuationDS(test_df, label_len, features)
         with open(cache_file, "wb") as f:
             pickle.dump((train_ds, val_ds, test_ds), f)
         print("💾 Cached new datasets")
@@ -336,7 +275,7 @@ def train(cfg=None):
         rmse = np.sqrt(mean_squared_error(trues, preds))
         metrics["mae"].append(mae)
         metrics["rmse"].append(rmse)
-        print(f"✅ Seed {seed} Test ({pred_len}-day) → MAE={mae:.4f}  RMSE={rmse:.4f}")
+        print(f"✅ Seed {seed} Test (valuation) → MAE={mae:.4f}  RMSE={rmse:.4f}")
 
     mae_arr = np.array(metrics["mae"])
     rmse_arr = np.array(metrics["rmse"])
